@@ -31,6 +31,8 @@ def main():
     actual_version = manifest.get("package", {}).get("version") or manifest["workspace"]["package"]["version"]
     if actual_version != version:
         raise SystemExit(f"source version {actual_version} does not match {version}")
+    subprocess.run(["git", "-C", str(source), "archive", "--format=tar.gz",
+                    f"--prefix={prefix}/", "--output", str(output / f"{prefix}.tar.gz"), commit], check=True)
     epoch = subprocess.check_output(["git", "-C", str(source), "show", "-s", "--format=%ct", commit], text=True).strip()
     crates = []
     for path in sorted((vendor / "cargo_home/gentoo").glob("*/Cargo.toml")):

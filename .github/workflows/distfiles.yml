@@ -40,8 +40,8 @@ jobs:
             version=${tag#v}
           fi
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'expected a stable x.y.z version' >&2; exit 1; }
-          tag="v$version"
-          sha=$(gh api "repos/$UPSTREAM/commits/$tag" --jq .sha)
+          tag="dist-v$version"
+          sha=$(gh api "repos/$UPSTREAM/commits/v$version" --jq .sha)
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
           {
             echo "version=$version"
@@ -51,11 +51,16 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           if release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" 2> /tmp/release-error); then
             prefix="$PROJECT-$version"
-            expected=("$prefix-crates.tar.xz" "$prefix-licenses.json" "$prefix-provenance.json" "$prefix-SHA256SUMS")
+            expected=("$prefix.tar.gz" "$prefix-crates.tar.xz" "$prefix-licenses.json" "$prefix-provenance.json" "$prefix-SHA256SUMS")
             expected_json=$(printf '%s\n' "${expected[@]}" | jq -Rsc 'split("\n")[:-1]')
-            jq -e --arg sha "$sha" --argjson expected "$expected_json" \
-              '.target_commitish == $sha and (($expected - [.assets[].name]) | length == 0)' <<< "$release" >/dev/null \
-              || { echo 'existing release is incomplete or belongs to another commit; inspect it before retrying' >&2; exit 1; }
+            jq -e --argjson expected "$expected_json" \
+              '($expected - [.assets[].name]) | length == 0' <<< "$release" >/dev/null \
+              || { echo 'existing release is incomplete; inspect it before retrying' >&2; exit 1; }
+            provenance_url=$(jq -r --arg name "$prefix-provenance.json" '.assets[] | select(.name == $name) | .url' <<< "$release")
+            provenance=$(gh api "$provenance_url" -H 'Accept: application/octet-stream')
+            jq -e --arg sha "$sha" --arg version "$version" --arg upstream "$UPSTREAM" \
+              '.commit == $sha and .version == $version and .upstream == $upstream' <<< "$provenance" >/dev/null \
+              || { echo 'existing release belongs to different upstream sources' >&2; exit 1; }
             echo "ready=true" >> "$GITHUB_OUTPUT"
             echo "publish=$(jq -r .draft <<< "$release")" >> "$GITHUB_OUTPUT"
           elif ! grep -q '(HTTP 404)' /tmp/release-error; then
@@ -112,14 +117,14 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
           SOURCE_SHA: ${{ steps.release.outputs.sha }}
         run: |
-          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --draft \
+          gh release create "dist-v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft \
             --title "v$VERSION" --notes "Gentoo build inputs from $UPSTREAM@$SOURCE_SHA. See the provenance and license manifests."
-          gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" out/*
-          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release upload "dist-v$VERSION" --repo "$GITHUB_REPOSITORY" out/*
+          gh release edit "dist-v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
 
       - name: Finish a fully uploaded draft
         if: steps.release.outputs.ready == 'true' && steps.release.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release.outputs.version }}
-        run: gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
+        run: gh release edit "dist-v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
